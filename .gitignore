@@ -1,0 +1,29 @@
+## Build results
+[Bb]in/
+[Oo]bj/
+_build/
+
+## User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+## VS
+.vs/
+*.csproj.user
+
+## Rider
+.idea/
+
+## Publish output
+publish/
+
+## Update temp
+.update_temp/
+
+## OS
+Thumbs.db
+desktop.ini
+.DS_Store
