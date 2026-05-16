@@ -57,8 +57,8 @@ public sealed class AppSearchService {
 
     private IReadOnlyList<SearchResult> GetRecommended(int maxCount) {
         var records = _recentUsageService.GetAll()
-            .OrderByDescending(item => item.LastLaunchedAt)
-            .ThenByDescending(item => item.LaunchCount)
+            .OrderByDescending(item => _recentUsageService.GetWeight(item.AppId))
+            .ThenByDescending(item => item.LastLaunchedAt)
             .ToList();
         var recommended = new List<SearchResult>();
         var addedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

@@ -2,6 +2,8 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "QuickLauncher", "QuickLauncher\QuickLauncher.csproj", "{6263D707-1515-43FD-AE72-FFC8310206B9}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "QuickLauncher.Tests", "QuickLauncher.Tests\QuickLauncher.Tests.csproj", "{1D6BE6A6-4599-4C9E-9EAE-FDE15412F1B2}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -12,5 +14,9 @@ Global
 		{6263D707-1515-43FD-AE72-FFC8310206B9}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{6263D707-1515-43FD-AE72-FFC8310206B9}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{6263D707-1515-43FD-AE72-FFC8310206B9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1D6BE6A6-4599-4C9E-9EAE-FDE15412F1B2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1D6BE6A6-4599-4C9E-9EAE-FDE15412F1B2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1D6BE6A6-4599-4C9E-9EAE-FDE15412F1B2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1D6BE6A6-4599-4C9E-9EAE-FDE15412F1B2}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
