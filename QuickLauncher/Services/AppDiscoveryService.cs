@@ -190,7 +190,7 @@ public sealed class AppDiscoveryService {
             .ToList();
     }
 
-    private static string BuildDeduplicateKey(AppEntry entry) {
+    public static string BuildDeduplicateKey(AppEntry entry) {
         if (entry.LaunchKind == LaunchKind.Uwp) {
             return $"uwp::{entry.LaunchTarget.Trim().ToLowerInvariant()}";
         }

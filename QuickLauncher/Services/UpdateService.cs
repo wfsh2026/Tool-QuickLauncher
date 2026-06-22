@@ -61,30 +61,65 @@ public sealed class UpdateService {
         var exeDir = Path.GetDirectoryName(exePath)!;
         var exeName = Path.GetFileName(exePath);
         var tempDir = Path.Combine(exeDir, ".update_temp");
+        if (Directory.Exists(tempDir)) {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
         Directory.CreateDirectory(tempDir);
 
         var tempExePath = Path.Combine(tempDir, exeName);
 
-        using (var stream = await Http.GetStreamAsync(info.DownloadUrl))
-        using (var fileStream = File.Create(tempExePath)) {
-            await stream.CopyToAsync(fileStream);
+        // 先通过 HEAD/GET 校验下载响应，避免把 404 HTML 或 JSON 当作 exe 落盘。
+        using (var response = await Http.GetAsync(info.DownloadUrl, HttpCompletionOption.ResponseHeadersRead)) {
+            if (!response.IsSuccessStatusCode) {
+                throw new InvalidOperationException($"下载失败：服务器返回 HTTP {(int)response.StatusCode}。");
+            }
+
+            var contentType = response.Content.Headers.ContentType?.MediaType ?? string.Empty;
+            if (contentType.Contains("text/html", StringComparison.OrdinalIgnoreCase)) {
+                throw new InvalidOperationException("下载失败：返回的内容是网页而非可执行文件，请检查发布资产配置。");
+            }
+
+            await using (var stream = await response.Content.ReadAsStreamAsync())
+            using (var fileStream = File.Create(tempExePath)) {
+                await stream.CopyToAsync(fileStream);
+            }
         }
 
+        ValidatePortableExecutable(tempExePath);
+
         var scriptPath = Path.Combine(tempDir, "update.bat");
+        var logPath = Path.Combine(exeDir, ".update_error.log");
         var script = $"""
             @echo off
             chcp 65001 >nul
-            timeout /t 2 /nobreak >nul
-            copy /y "{tempExePath}" "{exePath}"
+            set "SRC={tempExePath}"
+            set "DST={exePath}"
+            set "LOG={logPath}"
+            echo [%date% %time%] 开始更新 > "%LOG%"
+
+            REM 等待主程序退出后重试复制，最多约 15 秒。
+            set /a TRIES=0
+            :COPY_LOOP
+            copy /y "%SRC%" "%DST%" >nul 2>&1
             if errorlevel 1 (
-                echo 更新失败，请手动替换文件。
-                pause
-                exit /b 1
+                set /a TRIES+=1
+                if %TRIES% GEQ 30 (
+                    echo [%date% %time%] 复制失败，已重试 %%TRIES%% 次 >> "%LOG%"
+                    echo 更新失败：无法替换主程序文件，请手动替换。>> "%LOG%"
+                    start "" notepad "%LOG%"
+                    exit /b 1
+                )
+                timeout /t 1 /nobreak >nul
+                goto COPY_LOOP
             )
-            start "" "{exePath}"
+
+            echo [%date% %time%] 复制成功，正在重启 >> "%LOG%"
+            start "" "%DST%"
             rmdir /s /q "{tempDir}"
+            del "%LOG%" 2>nul
             """;
-        await File.WriteAllTextAsync(scriptPath, script, System.Text.Encoding.Default);
+        // 用 UTF-8 with BOM 写入脚本，配合 chcp 65001 才能正确处理中文/空格路径。
+        await File.WriteAllTextAsync(scriptPath, script, new System.Text.UTF8Encoding(true));
 
         Process.Start(new ProcessStartInfo {
             FileName = "cmd.exe",
@@ -94,18 +129,47 @@ public sealed class UpdateService {
         });
     }
 
+    private static void ValidatePortableExecutable(string path) {
+        if (!File.Exists(path)) {
+            throw new InvalidOperationException("下载失败：文件未正确写入。");
+        }
+
+        var info = new FileInfo(path);
+        if (info.Length < 64) {
+            throw new InvalidOperationException("下载失败：文件过小，不是有效的可执行文件（可能下载到错误内容）。");
+        }
+
+        using var stream = File.OpenRead(path);
+        var mzw = stream.ReadByte();
+        var mzb = stream.ReadByte();
+        if (mzw != 'M' || mzb != 'Z') {
+            throw new InvalidOperationException("下载失败：文件不是有效的可执行文件（缺少 PE 头），请检查发布资产是否为单个 .exe。");
+        }
+    }
+
     private static string? FindDownloadUrl(GitHubRelease release) {
         if (release.Assets is null || release.Assets.Count == 0) {
             return null;
         }
 
-        foreach (var asset in release.Assets) {
-            if (asset.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) {
-                return asset.DownloadUrl;
+        var exeAssets = release.Assets
+            .Where(asset => asset.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (exeAssets.Count == 0) {
+            // 没有任何 .exe 资产时不做盲目下载（避免把源码包/zip 当 exe）。
+            return null;
+        }
+
+        var currentName = Path.GetFileName(Environment.ProcessPath ?? string.Empty);
+        if (!string.IsNullOrEmpty(currentName)) {
+            var matching = exeAssets.FirstOrDefault(asset =>
+                string.Equals(asset.Name, currentName, StringComparison.OrdinalIgnoreCase));
+            if (matching is not null) {
+                return matching.DownloadUrl;
             }
         }
 
-        return release.Assets[0].DownloadUrl;
+        return exeAssets[0].DownloadUrl;
     }
 
     private static Version? ParseVersion(string tagName) {

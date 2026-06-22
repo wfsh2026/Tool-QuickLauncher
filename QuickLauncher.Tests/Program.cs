@@ -4,7 +4,10 @@ using QuickLauncher.Services;
 var tests = new (string Name, Action Run)[] {
     ("高频选中文件在匹配结果中优先", FrequentSelectionMovesMatchingFileFirst),
     ("高频选中文件在推荐结果中优先", FrequentSelectionMovesRecommendationFirst),
-    ("无匹配输入返回空结果", InvalidQueryReturnsNoResults)
+    ("无匹配输入返回空结果", InvalidQueryReturnsNoResults),
+    ("隐藏索引后搜索结果不可见", HiddenEntryIsFilteredFromSearch),
+    ("恢复索引后搜索结果重新可见", UnhideEntryRestoresSearchResult),
+    ("隐藏键在索引重建后保持稳定", HiddenKeyStableAcrossRebuild)
 };
 
 var failedCount = 0;
@@ -68,8 +71,56 @@ static void InvalidQueryReturnsNoResults() {
     AssertEqual(0, results.Count);
 }
 
-static AppSearchService CreateSearch(RecentUsageService recentUsage) {
-    return new AppSearchService(new SearchPinyinService(), recentUsage, new AppIconService());
+static void HiddenEntryIsFilteredFromSearch() {
+    var hidden = new HiddenIndexService([]);
+    var search = CreateSearch(new RecentUsageService([]), hidden);
+
+    hidden.Hide(Entry("Alpha"));
+    search.RefreshIndex([Entry("Alpha"), Entry("Alpine")]);
+
+    var results = search.Search("al", 8);
+
+    AssertEqual(1, results.Count);
+    AssertEqual("Alpine", results[0].App.DisplayName);
+}
+
+static void UnhideEntryRestoresSearchResult() {
+    var hidden = new HiddenIndexService([]);
+    var search = CreateSearch(new RecentUsageService([]), hidden);
+
+    hidden.Hide(Entry("Alpha"));
+    search.RefreshIndex([Entry("Alpha")]);
+    AssertEqual(0, search.Search("alpha", 8).Count);
+
+    var key = AppDiscoveryService.BuildDeduplicateKey(Entry("Alpha"));
+    AssertTrue(hidden.Unhide(key), "Unhide 应返回 true。");
+    search.RefreshIndex([Entry("Alpha")]);
+
+    var results = search.Search("alpha", 8);
+    AssertEqual(1, results.Count);
+    AssertEqual("Alpha", results[0].App.DisplayName);
+}
+
+static void HiddenKeyStableAcrossRebuild() {
+    // 重建索引后 AppEntry.Id 会变（Guid.NewGuid），但 BuildDeduplicateKey 必须稳定，
+    // 否则隐藏的条目会重新出现。这里用两个 Id 不同但目标相同的 entry 模拟重建。
+    var first = Entry("Alpha");
+    var second = Entry("Alpha");
+    first.Id = "old-id-001";
+    second.Id = "new-id-002";
+    AssertTrue(first.Id != second.Id, "两次构造的 Entry.Id 应不同。");
+
+    var key1 = AppDiscoveryService.BuildDeduplicateKey(first);
+    var key2 = AppDiscoveryService.BuildDeduplicateKey(second);
+    AssertEqual(key1, key2);
+
+    var hidden = new HiddenIndexService([]);
+    hidden.Hide(first);
+    AssertTrue(hidden.IsHidden(second), "Id 不同但同目标的条目仍应被视为隐藏。");
+}
+
+static AppSearchService CreateSearch(RecentUsageService recentUsage, HiddenIndexService? hidden = null) {
+    return new AppSearchService(new SearchPinyinService(), recentUsage, new AppIconService(), hidden);
 }
 
 static AppEntry Entry(string name) {

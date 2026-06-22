@@ -8,19 +8,26 @@ public sealed class AppSearchService {
     private readonly SearchPinyinService _pinyinService;
     private readonly RecentUsageService _recentUsageService;
     private readonly AppIconService _iconService;
+    private readonly HiddenIndexService? _hiddenIndexService;
     private List<PreparedEntry> _entries = [];
 
     public AppSearchService(
         SearchPinyinService pinyinService,
         RecentUsageService recentUsageService,
-        AppIconService iconService) {
+        AppIconService iconService,
+        HiddenIndexService? hiddenIndexService = null) {
         _pinyinService = pinyinService;
         _recentUsageService = recentUsageService;
         _iconService = iconService;
+        _hiddenIndexService = hiddenIndexService;
     }
 
     public void RefreshIndex(IEnumerable<AppEntry> entries) {
-        _entries = entries
+        var visible = _hiddenIndexService is null
+            ? entries
+            : entries.Where(entry => !_hiddenIndexService.IsHidden(entry));
+
+        _entries = visible
             .GroupBy(entry => NormalizeDisplayName(entry.DisplayName), StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .Select(Prepare)

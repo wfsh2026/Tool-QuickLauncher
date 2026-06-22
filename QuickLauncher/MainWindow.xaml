@@ -21,6 +21,16 @@
                      Foreground="{StaticResource TextPrimary}">
             <MenuItem Header="打开设置" Click="OpenSettingsMenuItem_OnClick" />
         </ContextMenu>
+        <ContextMenu x:Key="ResultItemContextMenu"
+                     Background="{StaticResource BgPanel}"
+                     BorderBrush="{StaticResource BorderDefault}"
+                     Foreground="{StaticResource TextPrimary}"
+                     Opened="ResultItemContextMenu_OnOpened">
+            <MenuItem Header="打开" Click="LaunchMenuItem_OnClick" />
+            <MenuItem Header="删除索引" Click="DeleteIndexMenuItem_OnClick" Foreground="{StaticResource Destructive}" />
+            <Separator />
+            <MenuItem Header="打开设置" Click="OpenSettingsMenuItem_OnClick" />
+        </ContextMenu>
     </Window.Resources>
     <Border Margin="12"
             Padding="16"
@@ -127,7 +137,7 @@
                                 <Setter Property="Background" Value="Transparent" />
                                 <Setter Property="BorderThickness" Value="0" />
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                <Setter Property="ContextMenu" Value="{StaticResource SettingsContextMenu}" />
+                                <Setter Property="ContextMenu" Value="{StaticResource ResultItemContextMenu}" />
                                 <Setter Property="Template">
                                     <Setter.Value>
                                         <ControlTemplate TargetType="ListBoxItem">

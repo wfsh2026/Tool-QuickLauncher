@@ -15,6 +15,7 @@ public partial class MainWindow : Window {
     private readonly AppSearchService _searchService;
     private readonly LaunchService _launchService;
     private readonly RecentUsageService _recentUsageService;
+    private readonly HiddenIndexService _hiddenIndexService;
     private readonly ObservableCollection<SearchResult> _results = [];
     private bool _allowClose;
     private bool _hideAfterLaunch = true;
@@ -22,13 +23,17 @@ public partial class MainWindow : Window {
 
     public event EventHandler? SettingsRequested;
 
+    public event EventHandler? IndexInvalidated;
+
     public MainWindow(
         AppSearchService searchService,
         LaunchService launchService,
-        RecentUsageService recentUsageService) {
+        RecentUsageService recentUsageService,
+        HiddenIndexService hiddenIndexService) {
         _searchService = searchService;
         _launchService = launchService;
         _recentUsageService = recentUsageService;
+        _hiddenIndexService = hiddenIndexService;
 
         InitializeComponent();
         ResultsListBox.ItemsSource = _results;
@@ -270,5 +275,45 @@ public partial class MainWindow : Window {
 
     private void OpenSettingsMenuItem_OnClick(object sender, RoutedEventArgs e) {
         SettingsRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void ResultItemContextMenu_OnOpened(object sender, RoutedEventArgs e) {
+        // 右键时把选中项切换为当前所悬停的条目，避免对错项操作。
+        if (sender is ContextMenu menu && menu.PlacementTarget is ListBoxItem item) {
+            ResultsListBox.SelectedItem = item.DataContext;
+        }
+    }
+
+    private async void LaunchMenuItem_OnClick(object sender, RoutedEventArgs e) {
+        await LaunchSelectedAsync();
+    }
+
+    private async void DeleteIndexMenuItem_OnClick(object sender, RoutedEventArgs e) {
+        if (ResultsListBox.SelectedItem is not SearchResult result) {
+            return;
+        }
+
+        var confirm = System.Windows.MessageBox.Show(
+            $"确定要将“{result.App.DisplayName}”从搜索结果中删除吗？\n删除后可在设置 - 已删除的索引中恢复。",
+            "QuickLauncher - 删除索引",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes) {
+            return;
+        }
+
+        try {
+            _hiddenIndexService.Hide(result.App, result.SourceText);
+            IndexInvalidated?.Invoke(this, EventArgs.Empty);
+            RefreshResults();
+        }
+        catch (Exception exception) {
+            System.Windows.MessageBox.Show(
+                $"删除失败：{exception.Message}",
+                "QuickLauncher",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        await Task.CompletedTask;
     }
 }

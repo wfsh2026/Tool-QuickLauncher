@@ -19,6 +19,7 @@ _build/
 
 ## Publish output
 publish/
+_publish/
 
 ## Update temp
 .update_temp/

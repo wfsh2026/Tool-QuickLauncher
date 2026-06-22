@@ -15,6 +15,7 @@ public partial class App : System.Windows.Application {
     private readonly AppIndexService _appIndexService = new();
     private readonly RecentUsageService _recentUsageService = new();
     private readonly AppIconService _appIconService = new();
+    private readonly HiddenIndexService _hiddenIndexService = new();
     private readonly AppSearchService _searchService;
     private readonly LaunchService _launchService = new();
     private TrayService? _trayService;
@@ -28,7 +29,7 @@ public partial class App : System.Windows.Application {
         AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
 
-        _searchService = new AppSearchService(new SearchPinyinService(), _recentUsageService, _appIconService);
+        _searchService = new AppSearchService(new SearchPinyinService(), _recentUsageService, _appIconService, _hiddenIndexService);
     }
 
     protected override async void OnStartup(StartupEventArgs e) {
@@ -53,8 +54,9 @@ public partial class App : System.Windows.Application {
         }
 
         try {
-            _mainWindow = new MainWindow(_searchService, _launchService, _recentUsageService);
+            _mainWindow = new MainWindow(_searchService, _launchService, _recentUsageService, _hiddenIndexService);
             _mainWindow.SettingsRequested += (_, _) => OpenSettingsWindow();
+            _mainWindow.IndexInvalidated += (_, _) => RefreshSearchIndex();
             _mainWindow.SetHideAfterLaunch(_settings.HideAfterLaunch);
             _mainWindow.UpdateHotkeyDisplay(_settings.Hotkey.GetDisplayText());
         }
@@ -138,11 +140,21 @@ public partial class App : System.Windows.Application {
     }
 
     private void OpenSettingsWindow() {
-        var settingsWindow = new SettingsWindow(_settings, _indexSummary);
+        var settingsWindow = new SettingsWindow(_settings, _indexSummary, _hiddenIndexService);
+        var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        if (version is not null) {
+            settingsWindow.VersionTextBlock.Text = $"QuickLauncher v{version.ToString(3)}";
+        }
         settingsWindow.RebuildRequested += async (_, rebuildSettings) =>
             await RebuildIndexFromWindowAsync(settingsWindow, rebuildSettings);
         settingsWindow.SettingsSaved += (_, newSettings) => ApplySettings(newSettings);
+        settingsWindow.HiddenChanged += (_, _) => RefreshSearchIndex();
         settingsWindow.ShowDialog();
+    }
+
+    private void RefreshSearchIndex() {
+        _searchService.RefreshIndex(_appIndexService.Entries);
+        _mainWindow?.RefreshResults();
     }
 
     private void ApplySettings(UserSettings newSettings) {
@@ -169,27 +181,90 @@ public partial class App : System.Windows.Application {
     }
 
     private async Task CheckForUpdateAsync() {
+        UpdateInfo? updateInfo;
         try {
             var updateService = new UpdateService();
-            var updateInfo = await updateService.CheckForUpdateAsync();
+            updateInfo = await updateService.CheckForUpdateAsync();
             if (updateInfo is null) {
                 return;
             }
-
-            var result = System.Windows.MessageBox.Show(
-                $"发现新版本 v{updateInfo.NewVersion}（当前 v{updateInfo.CurrentVersion}）\n\n{updateInfo.Description}\n\n是否立即更新？",
-                "QuickLauncher - 版本更新",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Information);
-
-            if (result != MessageBoxResult.Yes) {
-                return;
-            }
-
-            await updateService.DownloadAndApplyAsync(updateInfo);
-            Dispatcher.Invoke(() => ExitApplication(true));
         }
-        catch {
+        catch (Exception ex) {
+            Dispatcher.Invoke(() => System.Windows.MessageBox.Show(
+                $"检查更新失败：{ex.Message}",
+                "QuickLauncher - 版本更新",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning));
+            return;
+        }
+
+        var result = System.Windows.MessageBox.Show(
+            $"发现新版本 v{updateInfo.NewVersion}（当前 v{updateInfo.CurrentVersion}）\n\n{updateInfo.Description}\n\n是否立即更新？",
+            "QuickLauncher - 版本更新",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Information);
+
+        if (result != MessageBoxResult.Yes) {
+            return;
+        }
+
+        // 下载 + 落盘校验在后台进行；完成后由批处理脚本替换并重启主程序。
+        // 下载期间用一个无边框置顶提示遮住主窗口，避免误以为"点了没反应"。
+        System.Windows.Window? progressWindow = null;
+        Dispatcher.Invoke(() => {
+            progressWindow = new System.Windows.Window {
+                Width = 320,
+                Height = 120,
+                WindowStyle = System.Windows.WindowStyle.None,
+                ResizeMode = System.Windows.ResizeMode.NoResize,
+                WindowStartupLocation = System.Windows.WindowStartupLocation.CenterScreen,
+                Topmost = true,
+                Background = System.Windows.Media.Brushes.Transparent,
+                Content = new System.Windows.Controls.Border {
+                    Background = (System.Windows.Media.Brush)System.Windows.Application.Current.FindResource("BgPanel"),
+                    CornerRadius = new System.Windows.CornerRadius(12),
+                    Padding = new System.Windows.Thickness(20),
+                    Child = new System.Windows.Controls.StackPanel {
+                        VerticalAlignment = System.Windows.VerticalAlignment.Center,
+                        Children = {
+                            new System.Windows.Controls.TextBlock {
+                                Text = "正在下载更新…",
+                                FontSize = 14,
+                                FontWeight = System.Windows.FontWeights.SemiBold,
+                                Foreground = (System.Windows.Media.Brush)System.Windows.Application.Current.FindResource("TextPrimary"),
+                                HorizontalAlignment = System.Windows.HorizontalAlignment.Center
+                            },
+                            new System.Windows.Controls.TextBlock {
+                                Text = $"v{updateInfo.NewVersion}",
+                                FontSize = 11,
+                                Foreground = (System.Windows.Media.Brush)System.Windows.Application.Current.FindResource("TextSecondary"),
+                                HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+                                Margin = new System.Windows.Thickness(0, 6, 0, 0)
+                            }
+                        }
+                    }
+                }
+            };
+            progressWindow.Show();
+        });
+
+        try {
+            var applyService = new UpdateService();
+            await applyService.DownloadAndApplyAsync(updateInfo);
+            Dispatcher.Invoke(() => {
+                progressWindow?.Close();
+                ExitApplication(true);
+            });
+        }
+        catch (Exception ex) {
+            Dispatcher.Invoke(() => {
+                progressWindow?.Close();
+                System.Windows.MessageBox.Show(
+                    $"更新失败：{ex.Message}\n\n可前往 GitHub 手动下载新版本。",
+                    "QuickLauncher - 版本更新",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+            });
         }
     }
 

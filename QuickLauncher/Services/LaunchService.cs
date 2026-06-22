@@ -5,11 +5,17 @@ using QuickLauncher.Models;
 namespace QuickLauncher.Services;
 
 public sealed class LaunchService {
+    private readonly ProcessActivationService _activationService = new();
+
     public Task LaunchAsync(AppEntry entry) {
         return Task.Run(() => Launch(entry));
     }
 
-    private static void Launch(AppEntry entry) {
+    private void Launch(AppEntry entry) {
+        if (entry.LaunchKind != LaunchKind.Uwp && _activationService.TryActivate(entry)) {
+            return;
+        }
+
         var startInfo = entry.LaunchKind switch {
             LaunchKind.Uwp => new ProcessStartInfo {
                 FileName = "explorer.exe",

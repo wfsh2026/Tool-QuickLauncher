@@ -3,22 +3,36 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Input;
 using QuickLauncher.Models;
+using QuickLauncher.Services;
 using Forms = System.Windows.Forms;
 
 namespace QuickLauncher;
 
 public partial class SettingsWindow : Window {
     private readonly ObservableCollection<string> _customFolders;
+    private readonly ObservableCollection<HiddenEntry> _hiddenEntries;
+    private readonly HiddenIndexService _hiddenIndexService;
     private bool _isLoading = true;
 
     public event EventHandler<UserSettings>? SettingsSaved;
     public event EventHandler<UserSettings>? RebuildRequested;
+    public event EventHandler? HiddenChanged;
 
-    public SettingsWindow(UserSettings currentSettings, IndexSummary indexSummary) {
+    public string ApplicationVersion { get; set; } = string.Empty;
+
+    public SettingsWindow(
+        UserSettings currentSettings,
+        IndexSummary indexSummary,
+        HiddenIndexService hiddenIndexService) {
         InitializeComponent();
 
+        _hiddenIndexService = hiddenIndexService;
         _customFolders = new ObservableCollection<string>(currentSettings.CustomFolders);
         CustomFoldersListBox.ItemsSource = _customFolders;
+
+        _hiddenEntries = new ObservableCollection<HiddenEntry>(_hiddenIndexService.GetAll());
+        HiddenEntriesListBox.ItemsSource = _hiddenEntries;
+        UpdateHiddenEmptyState();
 
         PopulateKeys();
         LoadSettings(currentSettings.Clone());
@@ -110,6 +124,30 @@ public partial class SettingsWindow : Window {
         }
 
         RebuildRequested?.Invoke(this, settings);
+    }
+
+    private void UnhideButton_OnClick(object sender, RoutedEventArgs e) {
+        if (sender is not System.Windows.Controls.Button button ||
+            button.DataContext is not HiddenEntry entry) {
+            return;
+        }
+
+        if (_hiddenIndexService.Unhide(entry.Key)) {
+            _hiddenEntries.Remove(entry);
+            UpdateHiddenEmptyState();
+            HiddenChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    private void UpdateHiddenEmptyState() {
+        if (_hiddenEntries.Count > 0) {
+            HiddenEntriesEmptyTextBlock.Visibility = Visibility.Collapsed;
+            HiddenEntriesListBox.Visibility = Visibility.Visible;
+        }
+        else {
+            HiddenEntriesEmptyTextBlock.Visibility = Visibility.Visible;
+            HiddenEntriesListBox.Visibility = Visibility.Collapsed;
+        }
     }
 
     private void TitleBar_OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e) {

@@ -15,4 +15,6 @@ internal static class AppDataPaths {
     public static string SettingsFilePath => Path.Combine(RootDirectory, "settings.json");
 
     public static string AppIndexFilePath => Path.Combine(RootDirectory, "app-index.json");
+
+    public static string HiddenEntriesFilePath => Path.Combine(RootDirectory, "hidden-entries.json");
 }
