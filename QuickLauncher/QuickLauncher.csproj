@@ -8,7 +8,7 @@
         <UseWPF>true</UseWPF>
         <UseWindowsForms>true</UseWindowsForms>
         <StartupObject>QuickLauncher.Program</StartupObject>
-        <Version>1.0.3</Version>
+        <Version>1.0.4</Version>
     </PropertyGroup>
 
     <ItemGroup>
@@ -21,6 +21,7 @@
     <ItemGroup>
         <ApplicationDefinition Remove="App.xaml" />
         <Page Include="App.xaml" />
+        <EmbeddedResource Include="Services\UpdateInstaller.ps1" LogicalName="QuickLauncher.UpdateInstaller.ps1" />
     </ItemGroup>
 
 </Project>

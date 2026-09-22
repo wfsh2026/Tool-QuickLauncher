@@ -1,189 +1,191 @@
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.Json.Serialization;
 
 namespace QuickLauncher.Services;
 
 public sealed class UpdateService {
     private const string GitHubApiUrl = "https://api.github.com/repos/wfsh2026/Tool-QuickLauncher/releases/latest";
-
     private static readonly HttpClient Http = new() {
         DefaultRequestHeaders = {
             { "User-Agent", "QuickLauncher" },
-            { "Accept", "application/vnd.github.v3+json" }
+            { "Accept", "application/vnd.github+json" }
         },
-        Timeout = TimeSpan.FromSeconds(15)
+        Timeout = TimeSpan.FromSeconds(30)
     };
 
     public async Task<UpdateInfo?> CheckForUpdateAsync() {
-        var response = await Http.GetAsync(GitHubApiUrl);
+        using var response = await Http.GetAsync(GitHubApiUrl);
+        if (response.StatusCode == HttpStatusCode.Forbidden || response.StatusCode == HttpStatusCode.TooManyRequests) {
+            throw new InvalidOperationException("GitHub 拒绝了版本查询，可能已触发访问限流。请稍后重启程序重试，或前往发布页面下载。");
+        }
         if (!response.IsSuccessStatusCode) {
-            return null;
+            throw new InvalidOperationException($"版本查询失败：HTTP {(int)response.StatusCode}。请检查网络和发布仓库是否可访问。");
         }
 
         var release = await response.Content.ReadFromJsonAsync<GitHubRelease>();
-        if (release is null || string.IsNullOrWhiteSpace(release.TagName)) {
-            return null;
+        var remoteVersion = ParseVersion(release?.TagName);
+        if (release is null || remoteVersion is null) {
+            throw new InvalidOperationException("发布版本号无效，请使用 v主版本.次版本.修订号 格式。");
         }
 
-        var remoteVersion = ParseVersion(release.TagName);
-        if (remoteVersion is null) {
-            return null;
-        }
-
-        var currentVersion = Assembly.GetExecutingAssembly().GetName().Version;
+        var assembly = Assembly.GetExecutingAssembly();
+        var assemblyName = assembly.GetName();
+        var currentVersion = assemblyName.Version;
         if (currentVersion is null || remoteVersion <= currentVersion) {
             return null;
         }
 
-        var downloadUrl = FindDownloadUrl(release);
-        if (downloadUrl is null) {
-            return null;
+        var asset = FindDownloadAsset(release);
+        if (asset is null) {
+            throw new InvalidOperationException("发现新版本，但发布中缺少 QuickLauncher.exe 便携版。不能使用安装器或压缩包直接覆盖程序。");
         }
 
         return new UpdateInfo {
             CurrentVersion = currentVersion.ToString(3),
-            NewVersion = remoteVersion.ToString(3),
+            NewVersion = release.TagName!.TrimStart('v', 'V'),
             Description = release.Body ?? string.Empty,
-            DownloadUrl = downloadUrl
+            DownloadUrl = asset.DownloadUrl,
+            DownloadSize = asset.Size,
+            Digest = asset.Digest
         };
     }
 
     public async Task DownloadAndApplyAsync(UpdateInfo info) {
-        var exePath = Environment.ProcessPath;
-        if (string.IsNullOrEmpty(exePath)) {
-            throw new InvalidOperationException("无法获取当前进程路径。");
+        var installer = new UpdateInstallerService();
+        var session = installer.CreateSession();
+        try {
+            await DownloadAsync(info, session.SourcePath);
+            ValidateExecutable(session.SourcePath, info.NewVersion);
+            await installer.StartAsync(session);
         }
-
-        var exeDir = Path.GetDirectoryName(exePath)!;
-        var exeName = Path.GetFileName(exePath);
-        var tempDir = Path.Combine(exeDir, ".update_temp");
-        if (Directory.Exists(tempDir)) {
-            try { Directory.Delete(tempDir, true); } catch { }
+        catch (Exception exception) {
+            installer.RecordFailure(session, exception);
+            var reason = exception is OperationCanceledException
+                ? "下载更新超时，请检查网络后重试。"
+                : exception.Message;
+            var message = $"{reason}\n\n更新日志：{session.LogPath}";
+            throw new InvalidOperationException(message, exception);
         }
-        Directory.CreateDirectory(tempDir);
-
-        var tempExePath = Path.Combine(tempDir, exeName);
-
-        // 先通过 HEAD/GET 校验下载响应，避免把 404 HTML 或 JSON 当作 exe 落盘。
-        using (var response = await Http.GetAsync(info.DownloadUrl, HttpCompletionOption.ResponseHeadersRead)) {
-            if (!response.IsSuccessStatusCode) {
-                throw new InvalidOperationException($"下载失败：服务器返回 HTTP {(int)response.StatusCode}。");
-            }
-
-            var contentType = response.Content.Headers.ContentType?.MediaType ?? string.Empty;
-            if (contentType.Contains("text/html", StringComparison.OrdinalIgnoreCase)) {
-                throw new InvalidOperationException("下载失败：返回的内容是网页而非可执行文件，请检查发布资产配置。");
-            }
-
-            await using (var stream = await response.Content.ReadAsStreamAsync())
-            using (var fileStream = File.Create(tempExePath)) {
-                await stream.CopyToAsync(fileStream);
-            }
-        }
-
-        ValidatePortableExecutable(tempExePath);
-
-        var scriptPath = Path.Combine(tempDir, "update.bat");
-        var logPath = Path.Combine(exeDir, ".update_error.log");
-        var script = $"""
-            @echo off
-            chcp 65001 >nul
-            set "SRC={tempExePath}"
-            set "DST={exePath}"
-            set "LOG={logPath}"
-            echo [%date% %time%] 开始更新 > "%LOG%"
-
-            REM 等待主程序退出后重试复制，最多约 15 秒。
-            set /a TRIES=0
-            :COPY_LOOP
-            copy /y "%SRC%" "%DST%" >nul 2>&1
-            if errorlevel 1 (
-                set /a TRIES+=1
-                if %TRIES% GEQ 30 (
-                    echo [%date% %time%] 复制失败，已重试 %%TRIES%% 次 >> "%LOG%"
-                    echo 更新失败：无法替换主程序文件，请手动替换。>> "%LOG%"
-                    start "" notepad "%LOG%"
-                    exit /b 1
-                )
-                timeout /t 1 /nobreak >nul
-                goto COPY_LOOP
-            )
-
-            echo [%date% %time%] 复制成功，正在重启 >> "%LOG%"
-            start "" "%DST%"
-            rmdir /s /q "{tempDir}"
-            del "%LOG%" 2>nul
-            """;
-        // 用 UTF-8 with BOM 写入脚本，配合 chcp 65001 才能正确处理中文/空格路径。
-        await File.WriteAllTextAsync(scriptPath, script, new System.Text.UTF8Encoding(true));
-
-        Process.Start(new ProcessStartInfo {
-            FileName = "cmd.exe",
-            Arguments = $"/c \"{scriptPath}\"",
-            CreateNoWindow = true,
-            UseShellExecute = false
-        });
     }
 
-    private static void ValidatePortableExecutable(string path) {
-        if (!File.Exists(path)) {
-            throw new InvalidOperationException("下载失败：文件未正确写入。");
+    private async Task DownloadAsync(UpdateInfo info, string destination) {
+        var downloadUri = new Uri(info.DownloadUrl, UriKind.Absolute);
+        if (downloadUri.Scheme != Uri.UriSchemeHttps) {
+            throw new InvalidOperationException("更新下载地址必须使用 HTTPS。");
         }
 
-        var info = new FileInfo(path);
-        if (info.Length < 64) {
-            throw new InvalidOperationException("下载失败：文件过小，不是有效的可执行文件（可能下载到错误内容）。");
+        var downloadTimeout = TimeSpan.FromMinutes(10);
+        using var cancellation = new CancellationTokenSource(downloadTimeout);
+        var token = cancellation.Token;
+        using var response = await Http.GetAsync(downloadUri, HttpCompletionOption.ResponseHeadersRead, token);
+        if (!response.IsSuccessStatusCode) {
+            throw new InvalidOperationException($"下载失败：HTTP {(int)response.StatusCode}。");
         }
 
+        var contentType = response.Content.Headers.ContentType?.MediaType ?? string.Empty;
+        if (contentType.Contains("text/html", StringComparison.OrdinalIgnoreCase) || contentType.Contains("json", StringComparison.OrdinalIgnoreCase)) {
+            throw new InvalidOperationException("下载返回了网页或错误信息，并非可执行文件。");
+        }
+
+        await using (var stream = await response.Content.ReadAsStreamAsync(token))
+        await using (var file = File.Create(destination)) {
+            await stream.CopyToAsync(file, token);
+            var responseSize = response.Content.Headers.ContentLength;
+            if ((info.DownloadSize > 0 && file.Length != info.DownloadSize) || (responseSize.HasValue && file.Length != responseSize.Value)) {
+                throw new InvalidOperationException("下载文件不完整，文件大小与发布信息不一致。");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(info.Digest)) {
+            const string prefix = "sha256:";
+            if (!info.Digest.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) {
+                throw new InvalidOperationException("发布文件使用了不支持的摘要格式。");
+            }
+            await using var file = File.OpenRead(destination);
+            var hash = await SHA256.HashDataAsync(file, token);
+            var actualDigest = Convert.ToHexString(hash);
+            var expectedDigest = info.Digest[prefix.Length..];
+            if (!string.Equals(actualDigest, expectedDigest, StringComparison.OrdinalIgnoreCase)) {
+                throw new InvalidOperationException("下载文件校验失败，文件内容与发布信息不一致。");
+            }
+        }
+    }
+
+    private void ValidateExecutable(string path, string expectedVersion) {
         using var stream = File.OpenRead(path);
-        var mzw = stream.ReadByte();
-        var mzb = stream.ReadByte();
-        if (mzw != 'M' || mzb != 'Z') {
-            throw new InvalidOperationException("下载失败：文件不是有效的可执行文件（缺少 PE 头），请检查发布资产是否为单个 .exe。");
+        using var reader = new BinaryReader(stream);
+        if (stream.Length < 64 || reader.ReadUInt16() != 0x5A4D) {
+            throw new InvalidOperationException("下载文件不是有效的 Windows 可执行程序。");
+        }
+        stream.Position = 0x3C;
+        var headerOffset = reader.ReadInt32();
+        if (headerOffset < 64 || headerOffset > stream.Length - 6) {
+            throw new InvalidOperationException("下载文件的 PE 头无效。");
+        }
+        stream.Position = headerOffset;
+        if (reader.ReadUInt32() != 0x00004550) {
+            throw new InvalidOperationException("下载文件的 PE 签名无效。");
+        }
+        var machine = reader.ReadUInt16();
+        var expectedMachine = RuntimeInformation.ProcessArchitecture switch {
+            Architecture.X64 => 0x8664,
+            Architecture.X86 => 0x014C,
+            Architecture.Arm64 => 0xAA64,
+            _ => 0
+        };
+        if (machine != expectedMachine) {
+            throw new InvalidOperationException("发布文件的架构与当前程序不一致，请手动下载对应架构的版本。");
+        }
+
+        var fileInfo = FileVersionInfo.GetVersionInfo(path);
+        var actualVersion = ParseVersion(fileInfo.FileVersion);
+        var releaseVersion = ParseVersion(expectedVersion);
+        if (actualVersion is null || actualVersion != releaseVersion) {
+            throw new InvalidOperationException("发布文件的版本与 Release 标签不一致，请重新发布正确的程序。");
+        }
+        if (!string.Equals(fileInfo.ProductName, "QuickLauncher", StringComparison.OrdinalIgnoreCase)) {
+            throw new InvalidOperationException("发布文件不是 QuickLauncher 主程序，已取消替换。");
         }
     }
 
-    private static string? FindDownloadUrl(GitHubRelease release) {
-        if (release.Assets is null || release.Assets.Count == 0) {
+    private GitHubAsset? FindDownloadAsset(GitHubRelease release) {
+        if (release.Assets is null) {
             return null;
         }
-
-        var exeAssets = release.Assets
-            .Where(asset => asset.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        if (exeAssets.Count == 0) {
-            // 没有任何 .exe 资产时不做盲目下载（避免把源码包/zip 当 exe）。
-            return null;
-        }
-
-        var currentName = Path.GetFileName(Environment.ProcessPath ?? string.Empty);
-        if (!string.IsNullOrEmpty(currentName)) {
-            var matching = exeAssets.FirstOrDefault(asset =>
-                string.Equals(asset.Name, currentName, StringComparison.OrdinalIgnoreCase));
-            if (matching is not null) {
-                return matching.DownloadUrl;
+        foreach (var asset in release.Assets) {
+            if (string.Equals(asset.Name, "QuickLauncher.exe", StringComparison.OrdinalIgnoreCase)) {
+                return asset;
             }
         }
-
-        return exeAssets[0].DownloadUrl;
+        return null;
     }
 
-    private static Version? ParseVersion(string tagName) {
+    private Version? ParseVersion(string? tagName) {
+        if (string.IsNullOrWhiteSpace(tagName)) {
+            return null;
+        }
         var versionText = tagName.TrimStart('v', 'V');
-        return Version.TryParse(versionText, out var version) ? version : null;
+        if (!Version.TryParse(versionText, out var version) || version.Build < 0) {
+            return null;
+        }
+        var revision = Math.Max(version.Revision, 0);
+        // 统一三段标签与程序集中的四段版本。
+        var normalized = $"{version.Major}.{version.Minor}.{version.Build}.{revision}";
+        return Version.Parse(normalized);
     }
 
     private sealed class GitHubRelease {
         [JsonPropertyName("tag_name")]
         public string? TagName { get; set; }
-
         [JsonPropertyName("body")]
         public string? Body { get; set; }
-
         [JsonPropertyName("assets")]
         public List<GitHubAsset>? Assets { get; set; }
     }
@@ -191,9 +193,12 @@ public sealed class UpdateService {
     private sealed class GitHubAsset {
         [JsonPropertyName("name")]
         public string Name { get; set; } = string.Empty;
-
         [JsonPropertyName("browser_download_url")]
         public string DownloadUrl { get; set; } = string.Empty;
+        [JsonPropertyName("size")]
+        public long Size { get; set; }
+        [JsonPropertyName("digest")]
+        public string? Digest { get; set; }
     }
 }
 
@@ -202,4 +207,6 @@ public sealed class UpdateInfo {
     public string NewVersion { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
     public string DownloadUrl { get; set; } = string.Empty;
+    public long DownloadSize { get; set; }
+    public string? Digest { get; set; }
 }

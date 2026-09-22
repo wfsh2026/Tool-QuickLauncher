@@ -190,89 +190,74 @@ public partial class App : System.Windows.Application {
             }
         }
         catch (Exception ex) {
-            Dispatcher.Invoke(() => System.Windows.MessageBox.Show(
-                $"检查更新失败：{ex.Message}",
-                "QuickLauncher - 版本更新",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning));
+            var message = $"检查更新失败：{ex.Message}\n\n发布页面：https://github.com/wfsh2026/Tool-QuickLauncher/releases/latest";
+            System.Windows.MessageBox.Show(message, "QuickLauncher - 版本更新");
             return;
         }
 
-        var result = System.Windows.MessageBox.Show(
-            $"发现新版本 v{updateInfo.NewVersion}（当前 v{updateInfo.CurrentVersion}）\n\n{updateInfo.Description}\n\n是否立即更新？",
-            "QuickLauncher - 版本更新",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Information);
+        var prompt = $"发现新版本 v{updateInfo.NewVersion}（当前 v{updateInfo.CurrentVersion}）\n\n{updateInfo.Description}\n\n更新将退出并重启程序，是否立即更新？";
+        var result = System.Windows.MessageBox.Show(prompt, "QuickLauncher - 版本更新", MessageBoxButton.YesNo);
 
         if (result != MessageBoxResult.Yes) {
             return;
         }
 
-        // 下载 + 落盘校验在后台进行；完成后由批处理脚本替换并重启主程序。
-        // 下载期间用一个无边框置顶提示遮住主窗口，避免误以为"点了没反应"。
         System.Windows.Window? progressWindow = null;
-        Dispatcher.Invoke(() => {
-            progressWindow = new System.Windows.Window {
-                Width = 320,
-                Height = 120,
-                WindowStyle = System.Windows.WindowStyle.None,
-                ResizeMode = System.Windows.ResizeMode.NoResize,
-                WindowStartupLocation = System.Windows.WindowStartupLocation.CenterScreen,
-                Topmost = true,
-                Background = System.Windows.Media.Brushes.Transparent,
-                Content = new System.Windows.Controls.Border {
-                    Background = (System.Windows.Media.Brush)System.Windows.Application.Current.FindResource("BgPanel"),
-                    CornerRadius = new System.Windows.CornerRadius(12),
-                    Padding = new System.Windows.Thickness(20),
-                    Child = new System.Windows.Controls.StackPanel {
-                        VerticalAlignment = System.Windows.VerticalAlignment.Center,
-                        Children = {
-                            new System.Windows.Controls.TextBlock {
-                                Text = "正在下载更新…",
-                                FontSize = 14,
-                                FontWeight = System.Windows.FontWeights.SemiBold,
-                                Foreground = (System.Windows.Media.Brush)System.Windows.Application.Current.FindResource("TextPrimary"),
-                                HorizontalAlignment = System.Windows.HorizontalAlignment.Center
-                            },
-                            new System.Windows.Controls.TextBlock {
-                                Text = $"v{updateInfo.NewVersion}",
-                                FontSize = 11,
-                                Foreground = (System.Windows.Media.Brush)System.Windows.Application.Current.FindResource("TextSecondary"),
-                                HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
-                                Margin = new System.Windows.Thickness(0, 6, 0, 0)
-                            }
-                        }
-                    }
-                }
-            };
-            progressWindow.Show();
-        });
-
         try {
+            progressWindow = CreateUpdateProgressWindow(updateInfo.NewVersion);
+            progressWindow.Show();
             var applyService = new UpdateService();
             await applyService.DownloadAndApplyAsync(updateInfo);
-            Dispatcher.Invoke(() => {
-                progressWindow?.Close();
-                ExitApplication(true);
-            });
+            progressWindow.Close();
+            ExitApplication();
         }
         catch (Exception ex) {
-            Dispatcher.Invoke(() => {
-                progressWindow?.Close();
-                System.Windows.MessageBox.Show(
-                    $"更新失败：{ex.Message}\n\n可前往 GitHub 手动下载新版本。",
-                    "QuickLauncher - 版本更新",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Error);
-            });
+            progressWindow?.Close();
+            var message = $"更新失败：{ex.Message}\n\n手动下载：https://github.com/wfsh2026/Tool-QuickLauncher/releases/latest";
+            System.Windows.MessageBox.Show(message, "QuickLauncher - 版本更新");
         }
+    }
+
+    private System.Windows.Window CreateUpdateProgressWindow(string version) {
+        var panelBrush = (System.Windows.Media.Brush)FindResource("BgPanel");
+        var primaryBrush = (System.Windows.Media.Brush)FindResource("TextPrimary");
+        var secondaryBrush = (System.Windows.Media.Brush)FindResource("TextSecondary");
+        var title = new System.Windows.Controls.TextBlock {
+            Text = "正在下载并准备更新…",
+            FontSize = 14,
+            FontWeight = System.Windows.FontWeights.SemiBold,
+            Foreground = primaryBrush,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Center
+        };
+        var detail = new System.Windows.Controls.TextBlock {
+            Text = $"v{version} · 准备完成后自动重启",
+            FontSize = 11,
+            Foreground = secondaryBrush,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Center
+        };
+        var panel = new System.Windows.Controls.StackPanel {
+            VerticalAlignment = System.Windows.VerticalAlignment.Center
+        };
+        panel.Children.Add(title);
+        panel.Children.Add(detail);
+        var border = new System.Windows.Controls.Border {
+            Background = panelBrush,
+            CornerRadius = new System.Windows.CornerRadius(12),
+            Padding = new System.Windows.Thickness(20),
+            Child = panel
+        };
+        return new System.Windows.Window {
+            Width = 360,
+            Height = 120,
+            WindowStyle = System.Windows.WindowStyle.None,
+            ResizeMode = System.Windows.ResizeMode.NoResize,
+            WindowStartupLocation = System.Windows.WindowStartupLocation.CenterScreen,
+            Topmost = true,
+            Content = border
+        };
     }
 
     private void ExitApplication() {
-        ExitApplication(false);
-    }
-
-    private void ExitApplication(bool isUpdating) {
         _trayService?.Dispose();
         _trayService = null;
 
