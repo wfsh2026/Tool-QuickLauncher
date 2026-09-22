@@ -121,6 +121,14 @@ public sealed class AppSearchService {
             bestScore = 800;
             reason = "拼音首字母";
         }
+        else if (entry.PinyinFull.Contains(query, StringComparison.OrdinalIgnoreCase)) {
+            bestScore = 790;
+            reason = "拼音片段";
+        }
+        else if (entry.PinyinInitials.Contains(query, StringComparison.OrdinalIgnoreCase)) {
+            bestScore = 780;
+            reason = "首字母片段";
+        }
         else if (entry.AliasTokens.Any(token => token.StartsWith(query, StringComparison.OrdinalIgnoreCase))) {
             bestScore = 760;
             reason = "别名前缀";
